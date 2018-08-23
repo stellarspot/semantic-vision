@@ -105,6 +105,7 @@ usage: pattern_matcher_vqa.py [-h] --model-kind {MULTIDNN,HYPERNET}
                               [--opencog-log-level {FINE,DEBUG,INFO,ERROR,NONE}]
                               [--python-log-level {INFO,DEBUG,ERROR}]
                               [--question2atomese-java-library Q2AJARFILENNAME]
+                              [--dump DUMPFILE]
 
 Load pretrained words models and answer questions using OpenCog PatternMatcher
 
@@ -146,4 +147,5 @@ optional arguments:
                         Python logging level
   --question2atomese-java-library Q2AJARFILENNAME
                         path to question2atomese-<version>.jar
+  --dump DUMPFILE       path to dump file used for the process visualization
 ```

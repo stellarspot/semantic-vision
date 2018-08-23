@@ -5,6 +5,8 @@ import numpy as np
 import datetime
 import opencog.logger
 import argparse
+import pystache
+from itertools import groupby
 
 from opencog.atomspace import AtomSpace, TruthValue, types
 from opencog.type_constructors import *
@@ -115,7 +117,8 @@ def runNeuralNetwork(boundingBox, conceptNode):
         result = resultTensor.item()
         
         logger.debug('bb: %s, word: %s, result: %s', boundingBox.name, word, str(result))
-        # Return matching values from PatternMatcher by adding 
+        dump.onBoundingBox(boundingBox.name, word, result)
+        # Return matching values from PatternMatcher by adding
         # them to bounding box and concept node
         # TODO: how to return predicted values properly?
         boundingBox.set_value(conceptNode, FloatValue(result))
@@ -179,7 +182,7 @@ class PatternMatcherVqaPipeline:
         try:
             
             self.addBoundingBoxesIntoAtomspace(record)
-            
+            dump.onQuestionStart()
             relexFormula = self.questionConverter.parseQuestion(record.question)
             queryInScheme = self.questionConverter.convertToOpencogScheme(relexFormula)
             if queryInScheme is None:
@@ -193,7 +196,8 @@ class PatternMatcherVqaPipeline:
                 answer = self.answerOtherQuestion(queryInScheme)
             
             self.answerHandler.onAnswer(record, answer)
-            
+            dump.onQuestionEnd(record)
+
             print('{}::{}::{}::{}::{}'.format(record.questionId, record.question, 
                 answer, record.answer, record.imageId))
             
@@ -252,7 +256,110 @@ class PatternMatcherVqaPipeline:
             except BaseException as e:
                 logger.exception('Unexpected exception %s', e)
                 continue
-    
+### Dump Module
+class Dump():
+
+    def onQuestionStart(self):
+        pass
+
+    def onQuestionEnd(self, record):
+        pass
+
+    def onBoundingBox(self, boundingBox, word, result):
+        pass
+
+    def dump(self):
+        pass
+
+class HTMLDump(Dump):
+
+    def __init__(self, dumpFile, imagesPrefix, xNum, yNum, width, height):
+        self.dumpFile = dumpFile
+        self.imagesPrefix = imagesPrefix
+        self.xNum = xNum
+        self.yNum = yNum
+        self.width = width
+        self.height = height
+        self.dw = int(self.width / self.xNum)
+        self.dh = int(self.height / self.yNum)
+        self.records = []
+        self.boundingBoxes = []
+
+    def onQuestionStart(self):
+        self.boundingBoxes = []
+
+    def onBoundingBox(self, boundingBox, word, result):
+        self.boundingBoxes.append({'boundingBox': boundingBox, 'word': word, 'result': result})
+
+    def onQuestionEnd(self, record):
+
+        uniqueBoundingBoxes = []
+        bbKey = lambda boundingBox: boundingBox['boundingBox']
+        boundingBoxes = sorted(self.boundingBoxes, key=bbKey)
+
+        for boundingBox, group in groupby(boundingBoxes, key=bbKey):
+            num = int(boundingBox.split('-')[1])
+            x = int(num % self.xNum) * self.dw
+            y = int(num / self.yNum) * self.dh
+
+            labels = []
+            wx = x
+            wy = y
+            for g in group:
+                res = g['result']
+                word = "%s: %.2f" % (g['word'], res)
+                color = 'lime' if float(res) > 0.5 else 'pink'
+                label = {'word': word, 'wx': wx, 'wy': wy, 'color': color}
+                labels.append(label)
+                wy += 20
+
+            uniqueBoundingBox = {'num': num, 'x': x, 'y': y, 'width': self.dw, 'height': self.dh, 'labels': labels}
+            uniqueBoundingBoxes.append(uniqueBoundingBox)
+
+        image = "%s%s.jpg" % (self.imagesPrefix, addLeadingZeros(record.imageId, 12))
+        self.records.append({'record': record, 'boundingBoxes': uniqueBoundingBoxes, 'image': image})
+
+    def dump(self):
+        html_context = {'width': self.width, 'height': self.height, 'records': self.records}
+        html_template = """
+        <html>
+            <head><title>HTMl Dump</title></head>
+            <body>
+                {{#records}}
+                <canvas id="{{record.questionId}}"  width="{{width}}" height="{{height}}"></canvas>
+                <script>
+                    let canvas = document.getElementById("{{record.questionId}}");
+                    let context = canvas.getContext("2d");
+                    let img = new window.Image();
+                    img.src = "{{image}}";
+                    img.onload = function(){
+                        context.drawImage(img, 0, 0, {{width}}, {{height}});
+                        context.beginPath();
+                        context.lineWidth="2";
+                        context.strokeStyle="pink";
+                        context.font="20px Georgia";
+                        {{#boundingBoxes}}
+                        context.rect({{x}} + 3, {{y}} + 3, {{width}} - 6, {{height}} - 6);
+                        context.fillStyle = "red";
+                        context.fillText("{{num}}", {{x}} + 10, {{y}} + 25);
+                        {{#labels}}
+                        context.fillStyle = "{{color}}";
+                        context.fillText("{{word}}", {{wx}} + 10, {{wy}} + 40);
+                        {{/labels}}
+                        {{/boundingBoxes}}
+                        context.stroke();
+                    };
+                </script>
+                <h2>Question</h2>{{record.question}}
+                {{/records}}
+            </body>
+        </html>
+        """
+        html_content = pystache.render(html_template, html_context)
+        f = open(self.dumpFile, 'w')
+        f.write(html_content)
+        f.close()
+
 ### MAIN
 
 question2atomeseLibraryPath = (currentDir(__file__) +
@@ -312,6 +419,9 @@ parser.add_argument('--question2atomese-java-library',
     dest='q2aJarFilenName', action='store', type = str,
     default=question2atomeseLibraryPath,
     help='path to question2atomese-<version>.jar')
+parser.add_argument('--dump',
+    dest='dumpFile', action='store', type = str,
+    help='path to dump file used for the process visualization')
 args = parser.parse_args()
 
 # global variables
@@ -365,6 +475,7 @@ try:
                   statisticsAnswerHandler.questionsAnswered,
                   statisticsAnswerHandler.correctAnswerPercent(),
                   statisticsAnswerHandler.correctAnswers))
+    dump.dump()
 finally:
     jpype.shutdownJVM()
 
